@@ -1,0 +1,326 @@
+import { useState } from 'react'
+import AppShell from './AppShell'
+import { AlertBar, Tag, Modal } from './ui'
+import { CATS, UNIDADES, stInfo, fd } from '../lib/data'
+
+// ── Inventario ────────────────────────────────────────────────
+function Inventario({ stock, onAdj, onAddInsumo }) {
+  const [showModal, setShowModal] = useState(false)
+  const [editingId, setEditingId] = useState(null)
+  const [editVal, setEditVal]     = useState('')
+  const [form, setForm] = useState({ nom: '', cat: 'Limpieza', qty: 0, min: 2, uni: 'unidades' })
+
+  const bajo = stock.filter(s => s.qty <= s.min)
+  const grupos = {}
+  stock.forEach(s => { if (!grupos[s.cat]) grupos[s.cat] = []; grupos[s.cat].push(s) })
+
+  function commitEdit(s) {
+    onAdj(s.id, Math.max(0, parseInt(editVal) || 0))
+    setEditingId(null)
+  }
+
+  function handleGuardar() {
+    if (!form.nom.trim()) { alert('Escribí el nombre'); return }
+    onAddInsumo({ ...form, qty: Math.max(0, parseInt(form.qty)||0), min: Math.max(0, parseInt(form.min)||2) })
+    setForm({ nom: '', cat: 'Limpieza', qty: 0, min: 2, uni: 'unidades' })
+    setShowModal(false)
+  }
+
+  return (
+    <>
+      {bajo.length > 0
+        ? <AlertBar tipo="r"><strong>{bajo.length} insumo(s) por debajo del mínimo</strong></AlertBar>
+        : <AlertBar tipo="g">Todo el stock está en orden</AlertBar>
+      }
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--ink3)', textTransform: 'uppercase', letterSpacing: '.08em' }}>
+          {stock.length} insumos
+        </div>
+        <button className="btn b-lime b-sm" onClick={() => setShowModal(true)}>+ Agregar</button>
+      </div>
+
+      {Object.keys(CATS).map(cat => {
+        const items = grupos[cat]
+        if (!items?.length) return null
+        return (
+          <div key={cat} className="cat-block">
+            <div className="cat-header">
+              <span>{CATS[cat].e}</span>
+              <span>{CATS[cat].n}</span>
+              <span style={{ marginLeft: 'auto', color: 'var(--ink3)' }}>{items.length}</span>
+            </div>
+            {items.map(s => {
+              const si = stInfo(s)
+              return (
+                <div key={s.id} className="inv-row">
+                  <span className="inv-name">{s.nom}</span>
+                  <span className="inv-min">mín {s.min}</span>
+                  <span className={`status-pill st-${si.level}`}>{si.txt}</span>
+                  <div className="inv-controls">
+                    <button className="ctrl-btn" onClick={() => onAdj(s.id, Math.max(0, s.qty-1))}>−</button>
+                    {editingId === s.id
+                      ? <input
+                          className="ctrl-input" type="number" value={editVal}
+                          onChange={e => setEditVal(e.target.value)}
+                          onBlur={() => commitEdit(s)}
+                          onKeyDown={e => e.key === 'Enter' && commitEdit(s)}
+                          autoFocus
+                        />
+                      : <span className="ctrl-num" onClick={() => { setEditingId(s.id); setEditVal(String(s.qty)) }}
+                          title="Tocá para editar">{s.qty}</span>
+                    }
+                    <button className="ctrl-btn" onClick={() => onAdj(s.id, s.qty+1)}>+</button>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )
+      })}
+
+      {showModal && (
+        <Modal title="Nuevo insumo" onClose={() => setShowModal(false)}>
+          <div className="field">
+            <label>Nombre</label>
+            <input type="text" placeholder="Ej: Lavandina 5l" value={form.nom}
+              onChange={e => setForm(f => ({ ...f, nom: e.target.value }))} />
+          </div>
+          <div className="field">
+            <label>Categoría</label>
+            <select value={form.cat} onChange={e => setForm(f => ({ ...f, cat: e.target.value }))}>
+              {Object.entries(CATS).map(([k, v]) => <option key={k} value={k}>{v.e} {v.n}</option>)}
+            </select>
+          </div>
+          <div className="row2">
+            <div className="field">
+              <label>Cantidad actual</label>
+              <input type="number" min="0" value={form.qty}
+                onChange={e => setForm(f => ({ ...f, qty: e.target.value }))} />
+            </div>
+            <div className="field">
+              <label>Unidad</label>
+              <select value={form.uni} onChange={e => setForm(f => ({ ...f, uni: e.target.value }))}>
+                {UNIDADES.map(u => <option key={u}>{u}</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="field">
+            <label>Mínimo de stock</label>
+            <input type="number" min="0" value={form.min}
+              onChange={e => setForm(f => ({ ...f, min: e.target.value }))} />
+          </div>
+          <button className="btn b-lime b-lg" style={{ width: '100%' }} onClick={handleGuardar}>
+            Guardar insumo
+          </button>
+        </Modal>
+      )}
+    </>
+  )
+}
+
+// ── Pedir ─────────────────────────────────────────────────────
+function Pedir({ stock, onAddPedido }) {
+  const grupos = {}
+  stock.forEach(s => { if (!grupos[s.cat]) grupos[s.cat] = []; grupos[s.cat].push(s) })
+
+  const empty = { ins: '', otro: '', cant: 1, uni: 'unidades', urg: 'normal', fecha: '', obs: '' }
+  const [f, setF]     = useState(empty)
+  const [errs, setErrs] = useState({})
+  const [ok, setOk]   = useState(false)
+
+  const set = (k, v) => setF(p => ({ ...p, [k]: v }))
+
+  function enviar() {
+    const nom  = f.ins === 'Otro' ? f.otro.trim() : f.ins
+    const cant = parseInt(f.cant)
+    const e = {}
+    if (!nom)          e.ins  = 'Elegí o escribí el insumo'
+    if (!cant||cant<1) e.cant = 'Cantidad inválida'
+    if (!f.fecha)      e.fecha= 'Elegí una fecha'
+    setErrs(e)
+    if (Object.keys(e).length) return
+    onAddPedido({ insumo: nom, cantidad: cant, unidad: f.uni, urgencia: f.urg, fechaNec: f.fecha, obs: f.obs })
+    setF(empty); setOk(true)
+    setTimeout(() => setOk(false), 3000)
+  }
+
+  return (
+    <>
+      <div className="page-title">Pedir insumo</div>
+      {ok && <AlertBar tipo="g"><strong>Pedido registrado correctamente.</strong></AlertBar>}
+
+      <div className="row2">
+        <div className="field">
+          <label>Insumo</label>
+          <select value={f.ins} onChange={e => set('ins', e.target.value)}>
+            <option value="">— Elegí —</option>
+            {Object.keys(CATS).map(cat => grupos[cat]?.length ? (
+              <optgroup key={cat} label={`${CATS[cat].e} ${CATS[cat].n}`}>
+                {grupos[cat].map(s => <option key={s.id} value={s.nom}>{s.nom}</option>)}
+              </optgroup>
+            ) : null)}
+            <option value="Otro">Otro…</option>
+          </select>
+          {errs.ins && <div className="field-err">{errs.ins}</div>}
+        </div>
+        {f.ins === 'Otro' && (
+          <div className="field">
+            <label>¿Cuál?</label>
+            <input type="text" placeholder="Nombre..." value={f.otro} onChange={e => set('otro', e.target.value)} />
+          </div>
+        )}
+      </div>
+
+      <div className="row3">
+        <div className="field">
+          <label>Cantidad</label>
+          <input type="number" min="1" value={f.cant} onChange={e => set('cant', e.target.value)} />
+          {errs.cant && <div className="field-err">{errs.cant}</div>}
+        </div>
+        <div className="field">
+          <label>Unidad</label>
+          <select value={f.uni} onChange={e => set('uni', e.target.value)}>
+            {UNIDADES.map(u => <option key={u}>{u}</option>)}
+          </select>
+        </div>
+        <div className="field">
+          <label>Urgencia</label>
+          <select value={f.urg} onChange={e => set('urg', e.target.value)}>
+            <option value="normal">Normal</option>
+            <option value="alta">Alta</option>
+            <option value="critica">Crítica</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="field" style={{ maxWidth: 200 }}>
+        <label>¿Para cuándo?</label>
+        <input type="date" value={f.fecha} onChange={e => set('fecha', e.target.value)} />
+        {errs.fecha && <div className="field-err">{errs.fecha}</div>}
+      </div>
+
+      <div className="field">
+        <label>Nota <span style={{ color: 'var(--ink3)', textTransform: 'none', fontWeight: 400 }}>(opcional)</span></label>
+        <textarea placeholder="Área, turno, detalle..." value={f.obs} onChange={e => set('obs', e.target.value)} />
+      </div>
+
+      <div className="btn-row">
+        <button className="btn b-lime b-lg" onClick={enviar}>Registrar pedido</button>
+        <button className="btn b-ghost" onClick={() => { setF(empty); setErrs({}) }}>Limpiar</button>
+      </div>
+    </>
+  )
+}
+
+// ── Historial ─────────────────────────────────────────────────
+function Historial({ pedidos, onDelete }) {
+  const [bq, setBq]   = useState('')
+  const [est, setEst] = useState('')
+  const [urg, setUrg] = useState('')
+  const [det, setDet] = useState(null)
+
+  const fil = pedidos.filter(p => {
+    if (est && p.estado !== est) return false
+    if (urg && p.urgencia !== urg) return false
+    if (bq && !p.insumo.toLowerCase().includes(bq.toLowerCase())) return false
+    return true
+  })
+
+  return (
+    <>
+      <div className="page-title">Mis pedidos</div>
+      <div className="row3" style={{ marginBottom: 12 }}>
+        <div className="field" style={{ margin: 0 }}>
+          <label>Buscar</label>
+          <input type="text" placeholder="Insumo..." value={bq} onChange={e => setBq(e.target.value)} />
+        </div>
+        <div className="field" style={{ margin: 0 }}>
+          <label>Estado</label>
+          <select value={est} onChange={e => setEst(e.target.value)}>
+            <option value="">Todos</option>
+            <option>Pendiente</option><option>Aprobado</option><option>Rechazado</option>
+          </select>
+        </div>
+        <div className="field" style={{ margin: 0 }}>
+          <label>Urgencia</label>
+          <select value={urg} onChange={e => setUrg(e.target.value)}>
+            <option value="">Todas</option>
+            <option value="normal">Normal</option>
+            <option value="alta">Alta</option>
+            <option value="critica">Crítica</option>
+          </select>
+        </div>
+      </div>
+
+      {fil.length === 0
+        ? <div className="empty">— sin resultados —</div>
+        : (
+          <div className="tbl-wrap">
+            <table>
+              <thead><tr>
+                <th>Insumo</th><th>Cant</th><th>Urg</th><th>Fecha</th><th>Estado</th><th></th>
+              </tr></thead>
+              <tbody>
+                {fil.map(p => (
+                  <tr key={p.id} style={{ cursor: 'pointer' }} onClick={() => setDet(p)}>
+                    <td style={{ fontWeight: 500 }}>{p.insumo}</td>
+                    <td style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink2)', whiteSpace: 'nowrap' }}>
+                      {p.cantidad} {p.unidad}
+                    </td>
+                    <td><Tag value={p.urgencia} /></td>
+                    <td style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink3)' }}>{fd(p.creado)}</td>
+                    <td><Tag value={p.estado} /></td>
+                    <td onClick={e => e.stopPropagation()}>
+                      <button className="btn b-ghost b-sm" style={{ color: 'var(--red)', borderColor: 'transparent', padding: '3px 7px' }}
+                        onClick={() => confirm('¿Borrar?') && onDelete(p.id)}>✕</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div style={{ padding: '7px 11px', fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--ink3)' }}>
+              {fil.length} registro(s) · tocá para ver detalle
+            </div>
+          </div>
+        )
+      }
+
+      {det && (
+        <Modal title={det.insumo} onClose={() => setDet(null)}>
+          {[
+            ['Cantidad',   `${det.cantidad} ${det.unidad}`],
+            ['Urgencia',   <Tag key="u" value={det.urgencia} />],
+            ['Estado',     <Tag key="e" value={det.estado} />],
+            ['Pedido el',  fd(det.creado)],
+            ['Para',       fd(det.fechaNec)],
+            ...(det.obs ? [['Nota', det.obs]] : []),
+          ].map(([l, v]) => (
+            <div key={l} className="det-row">
+              <span className="det-l">{l}</span>
+              <span className="det-v">{v}</span>
+            </div>
+          ))}
+        </Modal>
+      )}
+    </>
+  )
+}
+
+// ── Root ──────────────────────────────────────────────────────
+const TABS = [
+  { id: 'inv',   label: 'Inventario' },
+  { id: 'pedir', label: 'Pedir' },
+  { id: 'hist',  label: 'Historial' },
+]
+
+export default function AppOperario({ stock, pedidos, dbStatus, onVolver, onAdj, onAddInsumo, onAddPedido, onDelete }) {
+  const [tab, setTab] = useState('inv')
+  return (
+    <AppShell rol="op" onVolver={onVolver} tabs={TABS} activeTab={tab} onTab={setTab} dbStatus={dbStatus}>
+      {tab === 'inv'   && <Inventario stock={stock} onAdj={onAdj} onAddInsumo={onAddInsumo} />}
+      {tab === 'pedir' && <Pedir stock={stock} onAddPedido={onAddPedido} />}
+      {tab === 'hist'  && <Historial pedidos={pedidos} onDelete={onDelete} />}
+    </AppShell>
+  )
+}
